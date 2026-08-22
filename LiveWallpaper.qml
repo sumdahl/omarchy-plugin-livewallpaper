@@ -412,6 +412,12 @@ Item {
       // its path re-points itself once the theme name below updates. Assigning
       // that path here would overwrite the binding and freeze it on the old
       // theme, which is exactly the bug this comment exists to prevent.
+      //
+      // Clear before reloading: a *deleted* file does not raise onLoadFailed,
+      // so `omarchy-live reset` would drop the layer from the list while its
+      // values stayed merged in. Nulling first makes absence mean absence.
+      liveSpec.userTheme = null
+      liveSpec.userGlobal = null
       userThemeFile.reload()
       userGlobalFile.reload()
       themeNameFile.reload()
@@ -458,6 +464,11 @@ Item {
     id: resolvedFile
     path: root.resolvedSpecPath
     printErrors: false
+    // Atomic writes replace the file, so every publish would hand out a new
+    // inode and silently kill every watcher pointed at this path — the bar
+    // panel and the lock screen both stop updating after the first change.
+    // Writing in place keeps their watches alive.
+    atomicWrites: false
   }
 
   // setText() does not create parent directories, and the runtime dir is empty

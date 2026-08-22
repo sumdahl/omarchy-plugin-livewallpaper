@@ -82,8 +82,19 @@ Panel {
     id: writer
     onExited: {
       root.refreshStatus()
+      // Re-read rather than waiting for the watcher: the service rewrites the
+      // resolved spec asynchronously after the reload, and a write that
+      // replaced the file would have taken the watch with it.
+      resolvedRefresh.restart()
       root.drain()
     }
+  }
+
+  Timer {
+    id: resolvedRefresh
+    interval: 250
+    repeat: false
+    onTriggered: resolvedFile.reload()
   }
 
   Process {
@@ -133,7 +144,10 @@ Panel {
     interval: 2000
     repeat: true
     running: root.opened
-    onTriggered: root.refreshStatus()
+    onTriggered: {
+      root.refreshStatus()
+      resolvedFile.reload()
+    }
   }
 
   implicitWidth: iconButton.implicitWidth

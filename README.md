@@ -78,12 +78,25 @@ omarchy-live off              # this session, every theme
 
 ## Where edits land
 
-`tune`, `preset` and `edit` write to the theme's own `live/live.json` when it
-already has one **and** the directory is writable — the theme-author workflow.
-Otherwise they write to `~/.config/omarchy/live/<theme>.json`. That is what lets
-you tune a stock theme under `/usr/share/omarchy/` and a theme cloned from git
-without modifying either. `omarchy-live path` prints the file that would be
-used.
+`tune`, `preset` and `edit` always write to layer 4,
+`~/.config/omarchy/live/<theme>.json` — never into the theme itself. So tuning
+works identically on a stock theme under `/usr/share/omarchy/`, on a theme
+cloned from git, and on one you wrote yourself, and none of them are modified
+by it. `omarchy-live path` prints the file that would be used.
+
+That also makes **reset** meaningful: `omarchy-live reset` drops your override
+and the theme's own look returns.
+
+Editing a theme's own spec is an authoring act, and needs saying so:
+
+```bash
+omarchy-live edit theme      # opens <theme>/live/live.json itself
+```
+
+An earlier version guessed at this — it wrote into a theme's own spec whenever
+one existed and was writable. That quietly dirtied git checkouts on every slider
+drag, and left `reset` with nothing to reset to, since the "default" was the
+file being edited.
 
 `omarchy-live install <theme>` materialises an editable spec inside a theme
 directory. For a stock theme it creates an **overlay** — a user theme directory

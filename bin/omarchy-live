@@ -20,18 +20,24 @@ fail() {
   exit 1
 }
 
-# Where an edit should land. A theme that already carries its own spec and is
-# writable is being authored, so edits belong with it. Everything else — stock
-# themes under /usr/share, git checkouts that must stay clean, themes with no
-# spec at all — is tuned through the per-theme override instead.
+# Tuning always lands in the per-theme override, never in the theme itself.
+#
+# An earlier version wrote into a theme's own live/live.json whenever it had
+# one and was writable, on the theory that such a theme was being authored.
+# That was wrong twice over: themes are commonly git checkouts, so casual
+# slider drags dirtied a published repo; and it left `reset` with nothing to
+# delete, because the "default" being reset to was the file just edited.
+#
+# Editing a theme's own spec is an authoring act and now needs saying so:
+#   omarchy-live edit theme
 write_target() {
   local theme="${1:-$THEME_NAME}"
-  local own="$HOME/.config/omarchy/themes/$theme/live/live.json"
-  if [[ -f $own && -w $(dirname "$own") ]]; then
-    echo "$own"
-  else
-    echo "$OVERRIDE_DIR/$theme.json"
-  fi
+  echo "$OVERRIDE_DIR/$theme.json"
+}
+
+theme_target() {
+  local theme="${1:-$THEME_NAME}"
+  echo "$HOME/.config/omarchy/themes/$theme/live/live.json"
 }
 
 # Edits go to the theme source and are mirrored into the staged copy. Writing
@@ -80,7 +86,7 @@ Usage: omarchy-live <command>
   preset <name>       subtle | balanced | bold
   current-preset      Print the closest named preset
   tune <key> <value>  Set a dotted key, e.g. print.halftone 0.4
-  edit                Open the spec this theme is tuned through, in $EDITOR
+  edit [theme]        Open the spec this theme is tuned through ("theme" = its own)
   reload              Re-read every spec layer
   reset [theme]       Drop your override, back to the theme's own look
   path                Print the file an edit would be written to
@@ -117,7 +123,14 @@ on | off | toggle)
 reload) omarchy-shell livewallpaper reload  >/dev/null; echo "reloaded" ;;
 status) omarchy-shell livewallpaper status | jq . 2>/dev/null || omarchy-shell livewallpaper status ;;
 edit)
-  target=$(write_target)
+  # `edit theme` opens the theme's own spec — an authoring act, and the only
+  # way to touch a file that may be under version control.
+  if [[ ${2:-} == "theme" ]]; then
+    target=$(theme_target)
+    [[ -f $target ]] || fail "theme '$THEME_NAME' has no live/live.json (run: omarchy-live install)"
+  else
+    target=$(write_target)
+  fi
   # Seed an empty override so there is something to open; the plugin treats a
   # spec naming no sections as "everything inherited".
   if [[ ! -f $target ]]; then
@@ -126,7 +139,8 @@ edit)
   fi
   ${EDITOR:-vi} "$target"
   jq -e . "$target" >/dev/null 2>&1 || echo "omarchy-live: warning — $target is not valid JSON, the plugin will ignore it" >&2
-  [[ $target == "$THEME_SPEC" ]] && cp "$target" "$STAGED_SPEC" 2>/dev/null || true
+  # A theme's own spec is staged into current/theme, so mirror it there too.
+  [[ $target == "$(theme_target)" ]] && cp "$target" "$STAGED_SPEC" 2>/dev/null || true
   omarchy-shell -q livewallpaper reload
   echo "→ $target"
   ;;
