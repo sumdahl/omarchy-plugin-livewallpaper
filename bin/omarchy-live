@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # omarchy:summary=Control the per-theme live wallpaper treatment
-# omarchy:args=[on|off|toggle|status|tune <key> <value>|reload|edit|install <theme>|uninstall <theme>]
+# omarchy:args=[on|off|toggle|enable|disable|status|tune <key> <value>|reset|path|reload|edit|install|uninstall|menu-install|menu-uninstall]
 # omarchy:examples=omarchy-live off | omarchy-live tune print.halftone 0.4
 
 set -euo pipefail
 
 THEME_NAME=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo "")
-THEME_SPEC="$HOME/.config/omarchy/themes/$THEME_NAME/live/live.json"
 OVERRIDE_DIR="$HOME/.config/omarchy/live"
 OVERRIDE_SPEC="$OVERRIDE_DIR/$THEME_NAME.json"
 STAGED_SPEC="$HOME/.local/state/omarchy/current/theme/live/live.json"
@@ -40,9 +39,8 @@ theme_target() {
   echo "$HOME/.config/omarchy/themes/$theme/live/live.json"
 }
 
-# Edits go to the theme source and are mirrored into the staged copy. Writing
-# only the staged copy would look right until the next `omarchy theme set`
-# rebuilt that directory and silently discarded the change.
+# Writes the override and reloads. Kept separate from write_target so every
+# caller lands in the same place.
 write_spec() {
   local content="$1"
   local target
@@ -52,18 +50,20 @@ write_spec() {
   printf '%s\n' "$content" >"$target.tmp"
   jq -e . "$target.tmp" >/dev/null || { rm -f "$target.tmp"; fail "refusing to write invalid JSON"; }
   mv "$target.tmp" "$target"
-  # A theme's own spec is staged into current/theme, so mirror it there too;
-  # otherwise the edit looks applied until the next `omarchy theme set` rebuilds
-  # that directory. Overrides live outside the theme and are read directly.
-  if [[ $target == "$THEME_SPEC" && -d $(dirname "$STAGED_SPEC") ]]; then
-    cp "$target" "$STAGED_SPEC"
-  fi
   omarchy-shell -q livewallpaper reload
   echo "→ $target" >&2
 }
 
-# Reads the merged spec the plugin actually resolved, so `tune` builds on what
-# is on screen rather than on whichever single file happens to exist.
+# What is actually on screen: the merged spec the service publishes. Use this
+# to *report* state. Do not build edits on it — writing merged values back
+# would bake every inherited key into the override and freeze it against later
+# theme changes.
+read_resolved() {
+  local resolved="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-live/resolved.json"
+  if [[ -f $resolved ]]; then cat "$resolved"; else echo '{}'; fi
+}
+
+# The override as it stands, which is what an edit builds on.
 read_effective() {
   local target
   target=$(write_target)
@@ -103,9 +103,11 @@ section taken whole:
   3. <theme>/live/live.json         what the theme's author intended
   4. ~/.config/omarchy/live/<theme>.json   your override for one theme
 
-tune and edit write to layer 3 when the theme already owns a spec and is
-writable, and to layer 4 otherwise — so stock themes and git-cloned themes can
-be tuned without being modified. "enabled": false in any layer opts out.
+tune, preset and edit always write layer 4, so no theme is ever modified by
+tuning and `reset` always has something to undo. To edit a theme's own spec
+deliberately, use `omarchy-live edit theme`.
+
+"enabled": false in any layer opts out.
 USAGE
 }
 
@@ -181,7 +183,7 @@ preset)
   ;;
 current-preset)
   # Echoes the closest named preset, so the menu can tick the active row.
-  h=$(read_effective | jq -r '.print.halftone // 0' 2>/dev/null || echo 0)
+  h=$(read_resolved | jq -r '.print.halftone // 0' 2>/dev/null || echo 0)
   awk -v h="$h" 'BEGIN{ if (h < 0.20) print "subtle"; else if (h < 0.34) print "balanced"; else print "bold" }'
   ;;
 install)
