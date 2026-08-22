@@ -49,6 +49,8 @@ icon with `omarchy bar remove io.github.sumdahl.livewallpaper` if it lingers.
 
 ## Bar widget
 
+![The control panel](preview.png)
+
 An icon on the bar, active while the treatment is actually rendering:
 
 - **click** — panel with the controls below
