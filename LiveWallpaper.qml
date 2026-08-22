@@ -26,6 +26,10 @@ Item {
   readonly property string currentBackgroundLink: stateHome + "/omarchy/current/background"
   readonly property string currentThemePath: stateHome + "/omarchy/current/theme"
   readonly property string themeNamePath: stateHome + "/omarchy/current/theme.name"
+  // Injected by the shell when this service is mounted (shell.qml:307).
+  property var shell: null
+  property var pluginRegistry: null
+
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ("/run/user/" + Quickshell.env("UID"))
   readonly property string resolvedSpecPath: runtimeDir + "/omarchy-live/resolved.json"
 
@@ -43,6 +47,43 @@ Item {
 
   function imageUrl(path) {
     return Util.fileUrl(path)
+  }
+
+  // The lock plugin the user is actually running. Stock first; failing that,
+  // any mounted service whose id ends in ".lock" — a fork carries a different
+  // id, and hardcoding "omarchy.lock" would quietly miss it.
+  function resolveLockService() {
+    if (!shell || typeof shell.serviceFor !== "function") return null
+
+    var stock = shell.serviceFor("omarchy.lock")
+    if (stock && "locked" in stock) return stock
+
+    var installed = pluginRegistry && pluginRegistry.installedPlugins
+      ? pluginRegistry.installedPlugins : null
+    if (!installed) return null
+
+    for (var id in installed) {
+      if (String(id).slice(-5) !== ".lock") continue
+      var svc = shell.serviceFor(id)
+      if (svc && "locked" in svc) return svc
+    }
+    return null
+  }
+
+  property var lockService: null
+  readonly property bool observedLocked: lockService && ("locked" in lockService)
+    ? lockService.locked === true
+    : false
+
+  // Services mount in an unspecified order, so the lookup is retried until it
+  // resolves rather than run once at startup and given up on.
+  Timer {
+    id: lockProbe
+    interval: 1500
+    repeat: true
+    running: root.lockService === null
+    triggeredOnStart: true
+    onTriggered: root.lockService = root.resolveLockService()
   }
 
   function refreshBackground() {
@@ -190,7 +231,7 @@ Item {
     // Called by the lock surface so the desktop scene parks while the screen
     // is covered instead of animating a wallpaper nobody can see.
     function setLocked(locked: bool): void {
-      liveSpec.locked = locked
+      liveSpec.ipcLocked = locked
     }
 
     function reload(): void {
@@ -209,6 +250,8 @@ Item {
         specPath: liveSpec.specPath,
         userThemePath: liveSpec.userThemePath,
         locked: liveSpec.locked,
+        lockedVia: liveSpec.ipcLocked ? "ipc" : (root.observedLocked ? "observed" : "none"),
+        lockService: root.lockService ? "resolved" : "none",
         fullscreen: liveSpec.anyFullscreen,
         onBattery: liveSpec.onBattery,
         background: root.displayedBackground,
@@ -250,7 +293,15 @@ Item {
     id: liveSpec
 
     property bool userEnabled: true
-    property bool locked: false
+
+    // Lock state arrives two ways, and either one going true is reason enough
+    // to park. The companion lock plugin pushes it over IPC; failing that, the
+    // mounted lock service is read directly, so installing this plugin on its
+    // own still stops the scene animating behind a lock surface nobody can
+    // see. OR, not precedence — the two must not be able to cancel each other.
+    property bool ipcLocked: false
+    readonly property bool locked: ipcLocked || root.observedLocked
+
     property string themeName: ""
     property var spec: null
 

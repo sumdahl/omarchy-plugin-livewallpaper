@@ -112,7 +112,9 @@ The scene parks itself — animations stopped, shader layer and its offscreen
 buffer dropped entirely — when:
 
 - a **fullscreen window** covers the wallpaper (resumes within ~1s of leaving it)
-- the **screen is locked** (the lock plugin hands this over via IPC)
+- the **screen is locked** — detected from whichever lock plugin is mounted,
+  so this works on its own; the companion plugin also pushes the signal over
+  IPC when installed
 - the treatment is switched off
 
 Measured cost of the full treatment on Intel Iris Xe at 1920x1080:
