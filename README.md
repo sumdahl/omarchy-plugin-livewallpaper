@@ -31,6 +31,22 @@ comments in a JSONC file, and is a no-op on a second run.
 
 Nothing about the menu is required — the bar icon works on its own.
 
+## Removal
+
+```bash
+omarchy-live menu-uninstall       # takes back only its own menu rows
+omarchy plugin disable io.github.sumdahl.livewallpaper
+rm -rf ~/.config/omarchy/plugins/io.github.sumdahl.livewallpaper
+rm -f  ~/.local/bin/omarchy-live
+rm -rf ~/.config/omarchy/live ~/.config/omarchy/live.json   # your overrides
+omarchy restart shell
+```
+
+Disabling restores Omarchy's built-in `omarchy.background`, so the desktop goes
+back to a stock static wallpaper. Themes keep their `live/live.json` — it is
+inert without this plugin and costs nothing to leave in place. Remove the bar
+icon with `omarchy bar remove io.github.sumdahl.livewallpaper` if it lingers.
+
 ## Bar widget
 
 An icon on the bar, active while the treatment is actually rendering:
