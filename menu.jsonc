@@ -1,0 +1,13 @@
+  // ---- Live wallpaper (io.github.sumdahl.livewallpaper) ---------------
+  // Added by `omarchy-live menu-install`. Remove with `omarchy-live menu-uninstall`.
+  // Every theme is live by default, so these rows always show. Edit Spec asks
+  // omarchy-live where an edit would land, which is the theme's own spec for a
+  // theme that owns one and a per-theme override otherwise.
+  "style.live": {"icon":"󱄄","label":"Live Wallpaper","aliases":["live","live-wallpaper"]},
+  "style.live.enabled": {"icon":"󰂵","label":"Enabled","description":"Parallax, glints and motes over the wallpaper","checked":"omarchy-live is-on","action":"omarchy-live toggle"},
+  "style.live.intensity": {"icon":"","label":"Intensity","title":"Live Intensity"},
+  "style.live.intensity.subtle": {"icon":"󱄄","label":"Subtle","checked":"[[ \"$(omarchy-live current-preset)\" == \"subtle\" ]]","action":"omarchy-live preset subtle"},
+  "style.live.intensity.balanced": {"icon":"󱄄","label":"Balanced","checked":"[[ \"$(omarchy-live current-preset)\" == \"balanced\" ]]","action":"omarchy-live preset balanced"},
+  "style.live.intensity.bold": {"icon":"󱄄","label":"Bold","checked":"[[ \"$(omarchy-live current-preset)\" == \"bold\" ]]","action":"omarchy-live preset bold"},
+  "style.live.reset": {"icon":"","label":"Reset to Theme Default","action":"omarchy-live reset"},
+  "style.live.edit": {"icon":"","label":"Edit Spec","action":"omarchy-launch-config-editor \"$(omarchy-live path)\""},

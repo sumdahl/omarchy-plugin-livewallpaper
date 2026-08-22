@@ -1,0 +1,310 @@
+#!/bin/bash
+
+# omarchy:summary=Control the per-theme live wallpaper treatment
+# omarchy:args=[on|off|toggle|status|tune <key> <value>|reload|edit|install <theme>|uninstall <theme>]
+# omarchy:examples=omarchy-live off | omarchy-live tune print.halftone 0.4
+
+set -euo pipefail
+
+THEME_NAME=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo "")
+THEME_SPEC="$HOME/.config/omarchy/themes/$THEME_NAME/live/live.json"
+OVERRIDE_DIR="$HOME/.config/omarchy/live"
+OVERRIDE_SPEC="$OVERRIDE_DIR/$THEME_NAME.json"
+STAGED_SPEC="$HOME/.local/state/omarchy/current/theme/live/live.json"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/io.github.sumdahl.livewallpaper"
+MENU_FRAGMENT="$PLUGIN_DIR/menu.jsonc"
+MENU_EXT="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+
+fail() {
+  echo "omarchy-live: $*" >&2
+  exit 1
+}
+
+# Where an edit should land. A theme that already carries its own spec and is
+# writable is being authored, so edits belong with it. Everything else — stock
+# themes under /usr/share, git checkouts that must stay clean, themes with no
+# spec at all — is tuned through the per-theme override instead.
+write_target() {
+  local theme="${1:-$THEME_NAME}"
+  local own="$HOME/.config/omarchy/themes/$theme/live/live.json"
+  if [[ -f $own && -w $(dirname "$own") ]]; then
+    echo "$own"
+  else
+    echo "$OVERRIDE_DIR/$theme.json"
+  fi
+}
+
+# Edits go to the theme source and are mirrored into the staged copy. Writing
+# only the staged copy would look right until the next `omarchy theme set`
+# rebuilt that directory and silently discarded the change.
+write_spec() {
+  local content="$1"
+  local target
+  target=$(write_target)
+  [[ -n $THEME_NAME ]] || fail "no current theme"
+  mkdir -p "$(dirname "$target")"
+  printf '%s\n' "$content" >"$target.tmp"
+  jq -e . "$target.tmp" >/dev/null || { rm -f "$target.tmp"; fail "refusing to write invalid JSON"; }
+  mv "$target.tmp" "$target"
+  # A theme's own spec is staged into current/theme, so mirror it there too;
+  # otherwise the edit looks applied until the next `omarchy theme set` rebuilds
+  # that directory. Overrides live outside the theme and are read directly.
+  if [[ $target == "$THEME_SPEC" && -d $(dirname "$STAGED_SPEC") ]]; then
+    cp "$target" "$STAGED_SPEC"
+  fi
+  omarchy-shell -q livewallpaper reload
+  echo "→ $target" >&2
+}
+
+# Reads the merged spec the plugin actually resolved, so `tune` builds on what
+# is on screen rather than on whichever single file happens to exist.
+read_effective() {
+  local target
+  target=$(write_target)
+  if [[ -f $target ]]; then
+    cat "$target"
+  else
+    echo '{}'
+  fi
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: omarchy-live <command>
+
+  on | off | toggle   Turn the live treatment on or off for this session
+  enable | disable    Same, but persistent, per theme: omarchy-live disable nord
+  status              Show live wallpaper state as JSON
+  is-on               Exit 0 when enabled (for menu `checked:` conditions)
+  is-available        Exit 0 when this theme is live-capable
+  preset <name>       subtle | balanced | bold
+  current-preset      Print the closest named preset
+  tune <key> <value>  Set a dotted key, e.g. print.halftone 0.4
+  edit                Open the spec this theme is tuned through, in $EDITOR
+  reload              Re-read every spec layer
+  reset [theme]       Drop your override, back to the theme's own look
+  path                Print the file an edit would be written to
+  install [theme]     Materialise an editable spec inside a theme directory
+  uninstall [theme]   Remove that theme's own spec
+  menu-install        Add the Style > Live Wallpaper rows to the Omarchy menu
+  menu-uninstall      Remove them again
+
+Every theme is live by default. Four layers are merged, later winning, each
+section taken whole:
+
+  1. built-in defaults              motion + motes, no halftone, colours "auto"
+  2. ~/.config/omarchy/live.json    your preference for every theme
+  3. <theme>/live/live.json         what the theme's author intended
+  4. ~/.config/omarchy/live/<theme>.json   your override for one theme
+
+tune and edit write to layer 3 when the theme already owns a spec and is
+writable, and to layer 4 otherwise — so stock themes and git-cloned themes can
+be tuned without being modified. "enabled": false in any layer opts out.
+USAGE
+}
+
+cmd=${1:-status}
+case "$cmd" in
+on | off | toggle)
+  omarchy-shell livewallpaper "$([[ $cmd == on ]] && echo enable || { [[ $cmd == off ]] && echo disable || echo toggle; })" >/dev/null
+  sleep 0.2
+  if omarchy-live is-on; then state="On"; glyph="󰅫"; else state="Off"; glyph="󰋙"; fi
+  # Visible confirmation, because the effect is subtle enough that a silent
+  # toggle leaves you unsure whether anything happened.
+  omarchy-notification-send -g "$glyph" "Live Wallpaper" "$state — $THEME_NAME" 2>/dev/null || true
+  echo "live wallpaper $(tr "[:upper:]" "[:lower:]" <<<"$state")"
+  ;;
+reload) omarchy-shell livewallpaper reload  >/dev/null; echo "reloaded" ;;
+status) omarchy-shell livewallpaper status | jq . 2>/dev/null || omarchy-shell livewallpaper status ;;
+edit)
+  target=$(write_target)
+  # Seed an empty override so there is something to open; the plugin treats a
+  # spec naming no sections as "everything inherited".
+  if [[ ! -f $target ]]; then
+    mkdir -p "$(dirname "$target")"
+    printf '{\n}\n' >"$target"
+  fi
+  ${EDITOR:-vi} "$target"
+  jq -e . "$target" >/dev/null 2>&1 || echo "omarchy-live: warning — $target is not valid JSON, the plugin will ignore it" >&2
+  [[ $target == "$THEME_SPEC" ]] && cp "$target" "$STAGED_SPEC" 2>/dev/null || true
+  omarchy-shell -q livewallpaper reload
+  echo "→ $target"
+  ;;
+tune)
+  key=${2:-}
+  value=${3:-}
+  [[ -n $key && -n $value ]] || fail "usage: omarchy-live tune <key> <value>"
+  # Numbers and booleans stay typed; anything else is written as a string, so
+  # colour values like "#e5334d" survive the round trip.
+  if [[ $value =~ ^-?[0-9]+(\.[0-9]+)?$ || $value == "true" || $value == "false" || $value == "null" ]]; then
+    jq_value=$value
+  else
+    jq_value=$(jq -Rn --arg v "$value" '$v')
+  fi
+  write_spec "$(read_effective | jq ".$key = $jq_value")"
+  echo "$key = $value"
+  ;;
+is-on)
+  # Exit status only, for menu `checked:` conditions. Reports the user's
+  # switch, not the live quality, so the row does not appear to untick itself
+  # every time a fullscreen window parks the scene.
+  [[ "$(omarchy-shell livewallpaper status 2>/dev/null | jq -r '.enabled // false' 2>/dev/null)" == "true" ]]
+  ;;
+is-available)
+  # Whether the current theme ships a live spec at all, for menu `when:`.
+  [[ "$(omarchy-shell livewallpaper status 2>/dev/null | jq -r '.available // false' 2>/dev/null)" == "true" ]]
+  ;;
+preset)
+  case "${2:-}" in
+  subtle)   halftone=0.14; grain=0.020; motes=18 ;;
+  balanced) halftone=0.26; grain=0.032; motes=24 ;;
+  bold)     halftone=0.42; grain=0.045; motes=34 ;;
+  *) fail "usage: omarchy-live preset <subtle|balanced|bold>" ;;
+  esac
+  write_spec "$(read_effective | jq ".print.halftone = $halftone | .print.grain = $grain | .motes.rate = $motes")"
+  omarchy-notification-send -g 󰅫 "Live Wallpaper" "Preset: ${2}" 2>/dev/null || true
+  echo "preset ${2} applied"
+  ;;
+current-preset)
+  # Echoes the closest named preset, so the menu can tick the active row.
+  h=$(read_effective | jq -r '.print.halftone // 0' 2>/dev/null || echo 0)
+  awk -v h="$h" 'BEGIN{ if (h < 0.20) print "subtle"; else if (h < 0.34) print "balanced"; else print "bold" }'
+  ;;
+install)
+  # Adds a live spec to another theme. Deliberately motion-first and
+  # halftone-free: the comic print pass is a Spider-Verse conceit and looks
+  # wrong on a photographic or minimal theme. Colours are "auto", so glints
+  # and motes pick up whatever palette that theme defines.
+  target=${2:-$THEME_NAME}
+  [[ -n $target ]] || fail "usage: omarchy-live install <theme>"
+  dir="$HOME/.config/omarchy/themes/$target"
+  stock="${OMARCHY_PATH:-/usr/share/omarchy}/themes/$target"
+  # Stock themes are package-owned, so the spec is never written there. Instead
+  # a user directory holding nothing but live/ is created: omarchy-theme-set
+  # copies the stock theme into staging first and overlays the user one on top,
+  # so the overlay adds a live spec without forking wallpapers or colours.
+  overlay=false
+  if [[ ! -d $dir ]]; then
+    [[ -d $stock ]] || fail "no theme '$target' in $HOME/.config/omarchy/themes or $stock"
+    overlay=true
+  fi
+  [[ -f $dir/live/live.json ]] && fail "$target already has live/live.json"
+  mkdir -p "$dir/live"
+  cat >"$dir/live/live.json" <<'SPEC'
+{
+  "version": 1,
+  "motion": { "period": 60, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
+  "print":  { "halftone": 0.0, "dotScale": 150, "grain": 0.022, "vignette": 0.30, "bloom": 0.08 },
+  "pulse":  { "everyMin": 24, "everyMax": 55, "attack": 200, "hold": 90, "release": 800, "aberration": 0.004 },
+  "glints": { "count": 2, "everyMin": 12, "everyMax": 30, "length": 0.45, "thickness": 1.6, "speed": 1100 },
+  "motes":  { "rate": 14, "life": 14000, "size": 2.6, "drift": 16, "fall": 18 },
+  "colors": { "accent": "auto", "secondary": "auto" },
+  "lock":   { "pulse": 0.5 },
+  "power":  { "batterySaver": false },
+  "video":  null
+}
+SPEC
+  echo "wrote $dir/live/live.json"
+  [[ $overlay == true ]] && echo "overlay for stock theme $target — colours and wallpapers still come from $stock"
+  if [[ $target == "$THEME_NAME" ]]; then
+    cp "$dir/live/live.json" "$STAGED_SPEC" 2>/dev/null || true
+    omarchy-shell -q livewallpaper reload
+    echo "active now"
+  else
+    echo "run: omarchy theme set $target"
+  fi
+  ;;
+menu-install)
+  # The menu reads exactly one user file and plugins cannot contribute rows, so
+  # the plugin's rows are merged into it here. Textual, not a jq round trip: the
+  # file is JSONC and a re-serialise would strip every comment in it.
+  [[ -f $MENU_FRAGMENT ]] || fail "no menu fragment at $MENU_FRAGMENT"
+  mkdir -p "$(dirname "$MENU_EXT")"
+  if [[ ! -f $MENU_EXT ]]; then
+    printf '{\n}\n' >"$MENU_EXT"
+    echo "created $MENU_EXT"
+  fi
+  if grep -q '"style\.live"' "$MENU_EXT"; then
+    echo "menu rows already installed — nothing to do"
+    exit 0
+  fi
+  cp "$MENU_EXT" "$MENU_EXT.bak"
+  # Insert before the final closing brace so surrounding comments and any other
+  # keys survive untouched.
+  close_line=$(grep -n '^[[:space:]]*}[[:space:]]*$' "$MENU_EXT" | tail -1 | cut -d: -f1)
+  [[ -n $close_line ]] || { rm -f "$MENU_EXT.bak"; fail "$MENU_EXT has no closing brace — refusing to guess"; }
+  {
+    head -n $((close_line - 1)) "$MENU_EXT"
+    cat "$MENU_FRAGMENT"
+    tail -n +"$close_line" "$MENU_EXT"
+  } >"$MENU_EXT.tmp"
+  mv "$MENU_EXT.tmp" "$MENU_EXT"
+  echo "installed live wallpaper rows into $MENU_EXT (backup: $MENU_EXT.bak)"
+  echo "run: omarchy restart shell"
+  ;;
+menu-uninstall)
+  [[ -f $MENU_EXT ]] || fail "no $MENU_EXT"
+  grep -q '"style\.live"' "$MENU_EXT" || { echo "menu rows not installed"; exit 0; }
+  cp "$MENU_EXT" "$MENU_EXT.bak"
+  # Only the rows this plugin owns: its banner comment block and every
+  # style.live key. Anything else in the file is left exactly as it was.
+  sed -i \
+    -e '/---- Live wallpaper (io\.github\.sumdahl\.livewallpaper)/,/theme that owns one and a per-theme override otherwise\./d' \
+    -e '/^[[:space:]]*"style\.live[".]/d' \
+    "$MENU_EXT"
+  echo "removed live wallpaper rows from $MENU_EXT (backup: $MENU_EXT.bak)"
+  echo "run: omarchy restart shell"
+  ;;
+reset)
+  # Drops the per-theme override so the theme's own spec (or the built-in
+  # baseline) shows through again. Never touches a theme's own file — undoing
+  # an author's edits is not what "reset to default" should mean.
+  target=${2:-$THEME_NAME}
+  [[ -n $target ]] || fail "usage: omarchy-live reset <theme>"
+  ovr="$OVERRIDE_DIR/$target.json"
+  if [[ -f $ovr ]]; then
+    rm -f "$ovr"
+    rmdir "$OVERRIDE_DIR" 2>/dev/null || true
+    omarchy-shell -q livewallpaper reload
+    echo "reset $target — removed $ovr"
+  else
+    echo "$target has no override to reset"
+  fi
+  ;;
+path)
+  # The file an edit would land in. Lets the menu open the right spec without
+  # duplicating the write-target rule.
+  write_target "${2:-$THEME_NAME}"
+  ;;
+enable | disable)
+  # Persistent, per theme, and distinct from `on`/`off`, which only last for
+  # the session. Written to the override so it survives a theme reinstall and
+  # never dirties a theme's git checkout.
+  target=${2:-$THEME_NAME}
+  [[ -n $target ]] || fail "usage: omarchy-live $cmd <theme>"
+  want=$([[ $cmd == enable ]] && echo true || echo false)
+  ovr="$OVERRIDE_DIR/$target.json"
+  mkdir -p "$OVERRIDE_DIR"
+  [[ -f $ovr ]] || printf '{}\n' >"$ovr"
+  jq ".enabled = $want" "$ovr" >"$ovr.tmp" && mv "$ovr.tmp" "$ovr"
+  omarchy-shell -q livewallpaper reload
+  echo "$target live wallpaper ${cmd}d — $ovr"
+  ;;
+uninstall)
+  target=${2:-$THEME_NAME}
+  [[ -n $target ]] || fail "usage: omarchy-live uninstall <theme>"
+  dir="$HOME/.config/omarchy/themes/$target"
+  [[ -f $dir/live/live.json ]] || fail "theme '$target' has no live/live.json"
+  rm -rf "$dir/live"
+  # An overlay directory exists only to carry the spec, so it goes too. A real
+  # user theme keeps its colours and wallpapers; rmdir refuses non-empty dirs.
+  rmdir "$dir" 2>/dev/null && echo "removed overlay $dir" || echo "removed $dir/live"
+  if [[ $target == "$THEME_NAME" ]]; then
+    rm -f "$STAGED_SPEC"
+    omarchy-shell -q livewallpaper reload
+    echo "static wallpaper restored"
+  fi
+  ;;
+-h | --help | help) usage ;;
+*) usage; exit 1 ;;
+esac

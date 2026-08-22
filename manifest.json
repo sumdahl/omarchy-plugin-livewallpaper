@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.sumdahl.livewallpaper",
+  "name": "Live Wallpaper",
+  "version": "1.0.0",
+  "author": "Sumiran Dahal",
+  "license": "MIT",
+  "description": "Desktop background renderer with a per-theme live treatment: parallax, web glints, motes and a comic-print shader pass.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "LiveWallpaper.qml",
+    "barWidget": "LiveBar.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.background"
+  },
+  "barWidget": {
+    "displayName": "Live Wallpaper",
+    "description": "Toggle and tune the live wallpaper treatment",
+    "category": "Appearance",
+    "allowMultiple": false
+  }
+}
