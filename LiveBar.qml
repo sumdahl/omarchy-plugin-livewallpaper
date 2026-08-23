@@ -158,7 +158,7 @@ Panel {
     id: iconButton
     anchors.fill: parent
     bar: root.bar
-    text: "\u{F1104}"
+    text: "\u{F0674}"
     active: root.opened || (root.liveOn && root.quality !== "off")
     tooltipText: root.barTooltip
 
