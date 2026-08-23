@@ -181,7 +181,9 @@ Item {
 
   Process {
     id: readlinkProc
-    command: ["readlink", "-f", root.currentBackgroundLink]
+    // Bounded like every other read in here: a path, not a stream. The link is
+    // passed as an argument rather than interpolated into the script.
+    command: ["sh", "-c", "readlink -f -- \"$1\" | head -c 4096", "sh", root.currentBackgroundLink]
     stdout: StdioCollector {
       onStreamFinished: root.setBackground(String(text || "").trim(), false)
     }
@@ -406,8 +408,7 @@ Item {
     // A theme swap replaces the whole current/theme directory, so the watcher
     // on the old inode is gone. Re-pointing the FileView is what re-arms it.
     onTriggered: {
-      specFile.path = ""
-      specFile.path = liveSpec.specPath
+      specFile.rearm()
       // The override directory is never swapped, so its watcher survives and
       // its path re-points itself once the theme name below updates. Assigning
       // that path here would overwrite the binding and freeze it on the old
@@ -424,36 +425,27 @@ Item {
     }
   }
 
-  FileView {
+  GuardedFile {
     id: specFile
     path: liveSpec.specPath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: liveSpec.themeLayer = liveSpec.parseLayer(text(), path)
+    onLoaded: function(text) { liveSpec.themeLayer = liveSpec.parseLayer(text, specFile.path) }
     onLoadFailed: liveSpec.themeLayer = null
   }
 
-  FileView {
+  GuardedFile {
     id: userGlobalFile
     path: liveSpec.userGlobalPath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: liveSpec.userGlobal = liveSpec.parseLayer(text(), path)
+    onLoaded: function(text) { liveSpec.userGlobal = liveSpec.parseLayer(text, userGlobalFile.path) }
     onLoadFailed: liveSpec.userGlobal = null
   }
 
   // The per-theme override lives outside the theme directory on purpose:
   // themes are often git checkouts or read-only stock themes, and tuning one
   // must not dirty a repo or need write access under /usr/share.
-  FileView {
+  GuardedFile {
     id: userThemeFile
     path: liveSpec.userThemePath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: liveSpec.userTheme = liveSpec.parseLayer(text(), path)
+    onLoaded: function(text) { liveSpec.userTheme = liveSpec.parseLayer(text, userThemeFile.path) }
     onLoadFailed: liveSpec.userTheme = null
   }
 
@@ -464,6 +456,10 @@ Item {
     id: resolvedFile
     path: root.resolvedSpecPath
     printErrors: false
+    // Write-only. Nothing here ever reads this file, but FileView would load it
+    // the moment it is pointed at the path, so a file already sitting at that
+    // path would be pulled into the shell for no reason at all.
+    preload: false
     // Atomic writes replace the file, so every publish would hand out a new
     // inode and silently kill every watcher pointed at this path — the bar
     // panel and the lock screen both stop updating after the first change.
@@ -489,13 +485,12 @@ Item {
     }
   }
 
-  FileView {
+  GuardedFile {
     id: themeNameFile
     path: root.themeNamePath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: liveSpec.themeName = String(text() || "").trim()
+    // A theme name, not a document.
+    maxBytes: 4096
+    onLoaded: function(text) { liveSpec.themeName = String(text || "").trim() }
   }
 
   // Fullscreen tracking -------------------------------------------------
@@ -558,14 +553,15 @@ Item {
   }
 
   // Battery -------------------------------------------------------------
-  FileView {
+  GuardedFile {
     id: acOnline
     path: "/sys/class/power_supply/AC/online"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
-      liveSpec.onBattery = String(text() || "").trim() === "0"
+    // A single digit from the kernel. Bounded like the rest so there is no path
+    // in here that reads a file without a ceiling, not because sysfs is a
+    // plausible source of one.
+    maxBytes: 4096
+    onLoaded: function(text) {
+      liveSpec.onBattery = String(text || "").trim() === "0"
       // The first reading is the state at startup, not a transition. Without
       // this guard every shell restart while unplugged would nag.
       liveSpec.batterySeen = true

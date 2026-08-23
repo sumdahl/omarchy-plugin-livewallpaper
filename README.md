@@ -228,6 +228,38 @@ a crossfade between two animating scenes.
 Live controls sit on a separate `livewallpaper` IPC target so that contract is
 never touched.
 
+## Hardening
+
+Not a behaviour change, added after the marketplace security baseline flagged
+it. Worth carrying forward on a rebase rather than dropping as noise.
+
+**Nothing is read without a ceiling.** Every file this plugin reads is writable
+local state: a theme's `live.json`, the global and per-theme overrides, the
+resolved spec in the runtime directory, the current theme name, the AC sysfs
+node. `FileView` reads whatever it is pointed at, in full, into a process that
+lives for the whole session, and it has no size limit of its own — so a file
+that has grown to hundreds of megabytes at one of those paths took the shell's
+memory with it, whether it got that way through corruption or on purpose.
+
+`GuardedFile.qml` splits the job. `FileView` keeps the half it is safe at,
+watching: `preload: false` stops it reading the file at all while
+`watchChanges` still delivers the notifications live edits depend on. The
+content comes from `head -c`, which stops at the ceiling inside the read itself
+rather than measuring the file and then trusting the measurement — nothing above
+the ceiling is ever allocated, and there is no window between the check and the
+read for the file to grow in. A file over the ceiling is named in the log and
+then treated exactly as a missing one, so the layer falls through, which is the
+same degradation a malformed file already gets.
+
+The ceiling is 256 KiB for the spec layers, 4 KiB for the theme name and the AC
+node. The write-only `FileView` that publishes the resolved spec carries
+`preload: false` too — it never reads that file, but without it a file already
+sitting at that path would be pulled in for no reason at all.
+
+Subprocess output is bounded the same way. The bar's `omarchy-shell
+livewallpaper status` call and the `readlink` that resolves the current
+background both pipe through `head -c` before `StdioCollector` sees them.
+
 ## Rebuilding the shader
 
 `shaders/livefx.frag.qsb` is committed. After editing the `.frag`:

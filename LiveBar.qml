@@ -99,7 +99,11 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["omarchy-shell", "livewallpaper", "status"]
+    // The status response is a small JSON object, but it arrives over an IPC
+    // socket from a process that could be anything, and StdioCollector will
+    // buffer whatever it is handed. `head -c` bounds it at the source so a
+    // wedged or hostile responder cannot grow the bar's memory.
+    command: ["sh", "-c", "omarchy-shell livewallpaper status | head -c 65536"]
     stdout: StdioCollector {
       onStreamFinished: {
         try {
@@ -120,15 +124,12 @@ Panel {
 
   // The service rewrites this whenever any layer changes, so watching it keeps
   // the sliders honest without polling.
-  FileView {
+  GuardedFile {
     id: resolvedFile
     path: root.resolvedPath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
+    onLoaded: function(text) {
       try {
-        var parsed = JSON.parse(String(text() || ""))
+        var parsed = JSON.parse(String(text || ""))
         root.spec = (parsed && typeof parsed === "object") ? parsed : null
       } catch (e) {
         root.spec = null
