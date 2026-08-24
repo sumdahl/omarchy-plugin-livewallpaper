@@ -260,6 +260,46 @@ Subprocess output is bounded the same way. The bar's `omarchy-shell
 livewallpaper status` call and the `readlink` that resolves the current
 background both pipe through `head -c` before `StdioCollector` sees them.
 
+**Nothing is read without a deadline either.** A read that never finishes is as
+bad as one that never stops growing: it holds the single reader, so every later
+reload queues behind it and that file stops updating for the rest of the
+session. A FIFO is the easy way to arrange that — opening one with no writer on
+the other end blocks forever.
+
+So the read tests for a regular file before it opens anything. `[ -f ]` answers
+from a stat rather than an open, so a FIFO, a character device or a directory at
+one of these paths is rejected without ever being opened. `timeout` covers what
+the test cannot: a path that turns into a FIFO in the moment between the test
+and the read, and a regular file that is simply slow to serve — one on a network
+mount that has gone away. It runs the read in its own process group and signals
+the group, so nothing is left behind. Either failure lands as absence, the same
+as a missing file. The two `StdioCollector` calls carry the same deadline.
+
+**Spec values are clamped, not just the bytes that carry them.** A ceiling on
+how much of a file is read says nothing about what those bytes ask for.
+`glints.count` becomes a `Repeater.model`, `motes.rate` an emitter's particles
+per second, `motes.life` how long each is retained, and the pulse and glint
+values become animation durations and timer intervals. A file well under a
+kilobyte can therefore ask for a million scene items, and the cost lands in a
+compositor-adjacent process that stays up for the whole session.
+
+`SpecBounds.js` carries a range for every numeric the spec can set, applied both
+at the merge — so the `status` output, the bar sliders and the published
+resolved spec all see the same bounded values — and again in the renderer's
+`cfg()`, which is the point every one of those values passes through and works
+for a spec that arrived from somewhere other than this plugin's own merge. The
+ranges sit far wider than anything a real theme wants: they are the point past
+which a value stops being a look and starts being a denial of service.
+Out-of-range clamps to the nearest end rather than dropping the layer, so a typo
+still renders close to what was asked for; a non-number is not a value at all
+and falls back to the consumer's own default.
+
+One bound is not a single key. The standing mote population is emission rate
+times lifetime, so a spec can put both of those inside their own ranges and
+still ask for tens of thousands of live particles — Qt caps an `ImageParticle`
+at 16383 and warns about it every frame past that. Emission is throttled against
+a population budget, which the built-in baseline sits at roughly 7% of.
+
 ## Rebuilding the shader
 
 `shaders/livefx.frag.qsb` is committed. After editing the `.frag`:

@@ -33,6 +33,10 @@ Item {
   property string path: ""
   property int maxBytes: 262144
   property bool watchChanges: true
+  // A read that never finishes is as bad as one that never stops growing: it
+  // holds the single reader, so every later reload queues behind it and this
+  // file stops updating for the rest of the session.
+  property int timeoutSec: 5
 
   signal loaded(string text)
   signal loadFailed()
@@ -66,7 +70,24 @@ Item {
     }
     guarded.queued = false
     guarded.started = true
-    readProc.command = ["head", "-c", String(guarded.maxBytes + 1), "--", guarded.path]
+    // Two guards the plain `head` did not have.
+    //
+    // `[ -f ]` is the regular-file test, and it answers from a stat rather than
+    // an open, so a FIFO planted at one of these paths is rejected without ever
+    // being opened — opening one with no writer on the other end blocks forever,
+    // which is exactly the hang this has to avoid. Character devices and
+    // directories fail the same test.
+    //
+    // `timeout` covers what the test cannot: a path that turns into a FIFO in
+    // the moment between the test and the read, and a regular file that is
+    // simply slow to serve — one on a network mount that has gone away. It runs
+    // the read in its own process group and signals the group, so nothing is
+    // left behind. Either failure exits non-zero and lands as absence, the same
+    // as a missing file.
+    readProc.command = ["timeout", "-s", "KILL", String(guarded.timeoutSec),
+                        "sh", "-c",
+                        "[ -f \"$1\" ] || exit 1\nexec head -c \"$2\" -- \"$1\"",
+                        "sh", guarded.path, String(guarded.maxBytes + 1)]
     readProc.running = true
   }
 
@@ -99,8 +120,8 @@ Item {
       guarded.queued = false
 
       if (exitCode !== 0 || exitStatus !== 0) {
-        // Missing, unreadable, or not a regular file. Absence, as far as every
-        // caller is concerned.
+        // Missing, unreadable, not a regular file, or past the deadline.
+        // Absence, as far as every caller is concerned.
         guarded.loadFailed()
       } else if (text.length > guarded.maxBytes) {
         console.warn("livewallpaper: ignoring " + guarded.path

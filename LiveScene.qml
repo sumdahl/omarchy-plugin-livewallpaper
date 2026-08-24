@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Particles
 import QtMultimedia
 import qs.Commons
+import "SpecBounds.js" as SpecBounds
 
 // The live wallpaper itself, independent of where it is mounted. The desktop
 // background layer and the lock surface both instantiate this, which is what
@@ -29,12 +30,20 @@ Item {
   readonly property bool fullEffects: hasSpec && quality === "high"
   readonly property string videoPath: hasSpec && spec.video ? String(spec.video) : ""
 
+  // Every numeric this scene reads comes through here, which is what makes this
+  // the place to bound them. The values are parsed out of writable local state
+  // and go straight into item counts, emitter rates and animation durations, so
+  // they are clamped to the ranges in SpecBounds.js on the way out rather than
+  // trusted for being small on disk. The clamp is applied here as well as at the
+  // merge because this scene renders whatever spec it is handed, including one
+  // that arrives from somewhere other than this plugin's own merge.
   function cfg(section, key, fallback) {
-    if (!hasSpec) return fallback
-    var s = spec[section]
-    if (!s || typeof s !== "object") return fallback
-    var v = s[key]
-    return (v === undefined || v === null) ? fallback : v
+    var v = fallback
+    if (hasSpec) {
+      var s = spec[section]
+      if (s && typeof s === "object" && s[key] !== undefined && s[key] !== null) v = s[key]
+    }
+    return SpecBounds.clamp(section, key, v, fallback)
   }
 
   // "auto" resolves against the live theme palette, so a theme that never
@@ -62,6 +71,24 @@ Item {
   // Overscan must cover peak zoom plus peak drift or the crop edge slides into
   // frame at the extremes of the loop.
   readonly property real overscan: 1.0 + zoomAmp + 2.0 * Math.max(driftXAmp, driftYAmp) + 0.01
+
+  // Mote population, which is neither of the values that produce it. The
+  // standing particle count is emission rate times lifetime, so a spec can put
+  // both of those well inside their own ranges and still ask for tens of
+  // thousands of live particles — Qt caps an ImageParticle at 16383 and warns
+  // about it on every frame past that. Emission is throttled against the budget
+  // below so the population stays bounded whatever the two factors say.
+  //
+  // Real specs never come near it: the built-in baseline stands at roughly 280
+  // particles, so this only ever engages for a value that was not a look.
+  readonly property int maxMotes: 4000
+  readonly property real moteLifeMs: Number(cfg("motes", "life", 12000))
+  readonly property real moteRate: {
+    var wanted = Number(cfg("motes", "rate", 26)) * intensity
+    // lifeSpanVariation adds 40%, so the longest-lived mote outlives `life`.
+    var secondsPerMote = Math.max(0.001, moteLifeMs * 1.4 / 1000)
+    return Math.min(wanted, maxMotes / secondsPerMote)
+  }
 
   NumberAnimation on phase {
     running: root.animating
@@ -238,7 +265,7 @@ Item {
     ParticleSystem {
       id: moteSystem
       anchors.fill: parent
-      running: root.fullEffects && Number(root.cfg("motes", "rate", 26)) > 0
+      running: root.fullEffects && root.moteRate > 0
       paused: !root.fullEffects
 
       ImageParticle {
@@ -256,9 +283,9 @@ Item {
         // terminal drift by the time they enter view.
         anchors.fill: parent
         anchors.topMargin: -parent.height * 0.12
-        emitRate: Number(root.cfg("motes", "rate", 26)) * root.intensity
-        lifeSpan: Number(root.cfg("motes", "life", 12000))
-        lifeSpanVariation: Number(root.cfg("motes", "life", 12000)) * 0.4
+        emitRate: root.moteRate
+        lifeSpan: root.moteLifeMs
+        lifeSpanVariation: root.moteLifeMs * 0.4
         size: Number(root.cfg("motes", "size", 3.0))
         sizeVariation: Number(root.cfg("motes", "size", 3.0)) * 0.7
         endSize: Number(root.cfg("motes", "size", 3.0)) * 0.35

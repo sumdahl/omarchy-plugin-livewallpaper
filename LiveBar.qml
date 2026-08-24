@@ -103,7 +103,11 @@ Panel {
     // socket from a process that could be anything, and StdioCollector will
     // buffer whatever it is handed. `head -c` bounds it at the source so a
     // wedged or hostile responder cannot grow the bar's memory.
-    command: ["sh", "-c", "omarchy-shell livewallpaper status | head -c 65536"]
+    // Deadlined as well as bounded: this runs on every popup open, and an IPC
+    // call that never answers would hold the reader and leave the popup showing
+    // a stale reading with no way to refresh it.
+    command: ["timeout", "-s", "KILL", "5",
+              "sh", "-c", "omarchy-shell livewallpaper status | head -c 65536"]
     stdout: StdioCollector {
       onStreamFinished: {
         try {

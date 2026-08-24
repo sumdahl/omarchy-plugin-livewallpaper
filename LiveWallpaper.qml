@@ -7,6 +7,7 @@ import QtQuick.Effects
 import QtQuick.Shapes
 import qs.Commons
 import qs.Ui
+import "SpecBounds.js" as SpecBounds
 
 // Desktop background layer with a live treatment on top.
 //
@@ -183,7 +184,8 @@ Item {
     id: readlinkProc
     // Bounded like every other read in here: a path, not a stream. The link is
     // passed as an argument rather than interpolated into the script.
-    command: ["sh", "-c", "readlink -f -- \"$1\" | head -c 4096", "sh", root.currentBackgroundLink]
+    command: ["timeout", "-s", "KILL", "5",
+              "sh", "-c", "readlink -f -- \"$1\" | head -c 4096", "sh", root.currentBackgroundLink]
     stdout: StdioCollector {
       onStreamFinished: root.setBackground(String(text || "").trim(), false)
     }
@@ -392,7 +394,11 @@ Item {
         if (!src || typeof src !== "object") continue
         for (var key in src) out[key] = src[key]
       }
-      spec = out
+      // Clamped once here so everything downstream of the merge sees the same
+      // bounded values: the renderer, the `status` IPC that reports what is in
+      // effect, the sliders in the bar, and the resolved spec published into the
+      // runtime directory for the lock surface to pick up.
+      spec = SpecBounds.sanitize(out)
     }
 
     onUserGlobalChanged: merge()
