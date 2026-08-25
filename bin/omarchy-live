@@ -351,10 +351,17 @@ reset)
   [[ -n $target ]] || fail "usage: omarchy-live reset <theme>"
   ovr="$OVERRIDE_DIR/$target.json"
   if [[ -f $ovr ]]; then
+    # Back up before deleting. This is reachable from a single menu row
+    # ("Reset to Theme Default") with no confirmation step, and it throws away
+    # everything the user tuned — sliders, presets, per-theme opt-outs. Losing
+    # that to one mis-selection with no way back is not an acceptable cost for a
+    # convenience row, and a copy is free.
+    cp "$ovr" "$ovr.bak"
     rm -f "$ovr"
     rmdir "$OVERRIDE_DIR" 2>/dev/null || true
     omarchy-shell -q livewallpaper reload
-    echo "reset $target — removed $ovr"
+    echo "reset $target — removed $ovr (backup: $ovr.bak)"
+    echo "undo with: mv \"$ovr.bak\" \"$ovr\" && omarchy-shell -q livewallpaper reload"
   else
     echo "$target has no override to reset"
   fi
