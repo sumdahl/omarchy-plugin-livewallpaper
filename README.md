@@ -31,7 +31,7 @@ Omarchy shell): `Quickshell`, `Quickshell.Io`, `Quickshell.Hyprland`,
 `omarchy-launch-floating-terminal-with-presentation`, and — only when you accept
 an update — `omarchy plugin update`.
 
-No package manager is invoked, and nothing here uses `sudo` or `pkexec`.
+No sudo or pkexec is required. No package manager is invoked.
 
 ## Install
 
