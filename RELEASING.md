@@ -57,6 +57,10 @@ not against GitHub's badge.
 tagging it, the check goes quiet until the next release — which is the intended
 behaviour, not a bug.
 
+In practice this means **batch changes and tag them**, rather than pushing to
+`main` between releases. Even a documentation commit leaves `main` ahead of the
+tag and stops updates being offered until the next one is cut.
+
 ## Never
 
 - **Move or delete a published tag.** The ruleset blocks it; the reason is that

@@ -51,6 +51,22 @@ blindly.**
 
 If a key rotation is genuine, delete that file after confirming the new key.
 
+### The first install cannot bootstrap itself
+
+`allowed_signers` arrived in v1.2.0, so an installation older than that has no
+file to verify against and the check refuses rather than trusting the remote's
+copy — correctly, since fetching the signer list from the same place as the
+release would verify nothing. Those installations have no update check at all
+either, so in practice they update once by hand:
+
+```bash
+omarchy plugin update io.github.sumdahl.livewallpaper
+```
+
+From v1.2.0 onward the check works on its own. Note that the signer file it
+trusts is always **the one already on disk**, never one fetched alongside the
+release being verified.
+
 ## What this protects against
 
 - an accidental or stray push reaching users (`HEAD` must equal a signed tag)
