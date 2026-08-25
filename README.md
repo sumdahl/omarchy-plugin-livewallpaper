@@ -13,6 +13,26 @@ each in its own palette — a theme has to ship nothing at all. Themes that want
 a specific look declare it; users who want something else override it; anyone
 who wants a static wallpaper opts out.
 
+## Requirements
+
+Everything here ships with Omarchy Quattro — the list is for auditability, not
+because anything needs installing.
+
+**Qt/Quickshell modules** (from `quickshell` and `qt6-*`, already required by the
+Omarchy shell): `Quickshell`, `Quickshell.Io`, `Quickshell.Hyprland`,
+`Quickshell.Wayland`, `Quickshell.Services.UPower` (battery state),
+`QtQuick.Particles` (motes), `QtQuick.Effects`, `QtQuick.Shapes`, and
+`QtMultimedia` — used only when a theme's spec names a `video`.
+
+**Commands:** `bash`, `git` (update checking only), `jq`, and the coreutils
+`head`, `timeout`, `install`, `readlink`, `grep`, `sed`, `awk`.
+
+**Omarchy commands:** `omarchy-shell`, `omarchy-notification-send`,
+`omarchy-launch-floating-terminal-with-presentation`, and — only when you accept
+an update — `omarchy plugin update`.
+
+No package manager is invoked, and nothing here uses `sudo` or `pkexec`.
+
 ## Install
 
 ```bash
