@@ -90,6 +90,8 @@ Usage: omarchy-live <command>
   current-speed       Print the multiplier in effect
   tune <key> <value>  Set a dotted key, e.g. print.halftone 0.4
   edit [theme]        Open the spec this theme is tuned through ("theme" = its own)
+  check-updates       Look for a newer signed release (detects only)
+  update              Review and apply one, via omarchy plugin update
   reload              Re-read every spec layer
   reset [theme]       Drop your override, back to the theme's own look
   path                Print the file an edit would be written to
@@ -153,6 +155,24 @@ speed)
 current-speed)
   # For the menu to tick the active row.
   read_resolved | jq -r '.motion.speed // 1' 2>/dev/null || echo 1
+  ;;
+check-updates)
+  # Detect only. Applying is `omarchy-live update`, which hands off to Omarchy's
+  # own updater so the diff and the confirmation happen where you can see them.
+  if v=$("$PLUGIN_DIR/bin/omarchy-live-update-check"); then
+    echo "version $v is available — review it with: omarchy-live update"
+  else
+    rc=$?
+    ((rc == 2)) && exit 2   # the check already said why, on stderr
+    echo "up to date ($(jq -r .version "$PLUGIN_DIR/manifest.json" 2>/dev/null))"
+  fi
+  ;;
+update)
+  # Deliberately a thin wrapper. omarchy-plugin-update prints the full diff,
+  # asks before applying, refuses anything that is not a fast-forward, and rolls
+  # back if the result fails validation — none of which is worth reimplementing
+  # here, and all of which would be weakened by doing so.
+  exec omarchy plugin update io.github.sumdahl.livewallpaper "${@:2}"
   ;;
 reload) omarchy-shell livewallpaper reload  >/dev/null; echo "reloaded" ;;
 status) omarchy-shell livewallpaper status | jq . 2>/dev/null || omarchy-shell livewallpaper status ;;

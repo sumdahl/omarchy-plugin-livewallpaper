@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# omarchy:summary=Check whether a signed live wallpaper release is available
+#
+# Detects updates. Deliberately does not apply them: applying is left to
+# Omarchy's own `omarchy plugin update`, which shows the full diff, asks for
+# confirmation, refuses anything that is not a fast-forward, and rolls back if
+# the result fails validation. This script never checks anything out and never
+# runs a single byte that came from the remote.
+#
+# Exit codes
+#   0  an update is available and its signature verified — prints the version
+#   1  nothing to offer (up to date, no release cut yet, or offline)
+#   2  refused for a reason worth seeing — prints why on stderr
+#
+# Anything unexpected is exit 1, not exit 0. A checker that fails open would
+# nag on every network hiccup; one that fails closed just stays quiet.
+
+set -uo pipefail
+
+PLUGIN_ID="io.github.sumdahl.livewallpaper"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+EXPECTED_ORIGIN="github.com/sumdahl/omarchy-plugin-livewallpaper"
+ALLOWED_SIGNERS="$PLUGIN_DIR/.github/allowed_signers"
+STATE_DIR="$HOME/.local/state/omarchy-live"
+PIN_FILE="$STATE_DIR/signer.pin"
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
+
+quiet() { exit 1; }
+refuse() { echo "omarchy-live-update-check: $*" >&2; exit 2; }
+
+[[ -d $PLUGIN_DIR/.git ]] || quiet   # installed by hand, not a git checkout
+
+# 1. The remote must still be the upstream this plugin was published from.
+# Someone who can repoint `origin` can point the updater at anything.
+origin=$(git -C "$PLUGIN_DIR" remote get-url origin 2>/dev/null) || quiet
+normalised=${origin%.git}
+normalised=${normalised#https://}
+normalised=${normalised#git@}
+normalised=${normalised/://}
+[[ $normalised == "$EXPECTED_ORIGIN" ]] ||
+  refuse "origin resolves to '$normalised' (from '$origin'), not '$EXPECTED_ORIGIN' — refusing to offer an update"
+
+# 2. Refs only. `ls-remote` transfers no objects, so nothing that could be code
+# has been downloaded at this point.
+refs=$(timeout 15 git -C "$PLUGIN_DIR" ls-remote origin HEAD 'refs/tags/v*' 2>/dev/null) || quiet
+[[ -n $refs ]] || quiet
+
+head_sha=$(awk '$2 == "HEAD" { print $1; exit }' <<<"$refs")
+[[ -n $head_sha ]] || quiet
+
+# Newest v* by version sort. Annotated tags appear twice — `v1.2.0` (the tag
+# object) and `v1.2.0^{}` (the commit it points at); the peeled line is the one
+# that can be compared against HEAD.
+newest=$(awk '$2 ~ /^refs\/tags\/v[0-9]/ { sub(/\^\{\}$/, "", $2); sub(/^refs\/tags\//, "", $2); print $2 }' <<<"$refs" |
+  sort -Vu | tail -1)
+[[ -n $newest ]] || quiet
+
+tag_sha=$(awk -v t="refs/tags/$newest^{}" '$2 == t { print $1; exit }' <<<"$refs")
+# A lightweight tag has no peeled line; it points straight at the commit.
+[[ -n $tag_sha ]] || tag_sha=$(awk -v t="refs/tags/$newest" '$2 == t { print $1; exit }' <<<"$refs")
+[[ -n $tag_sha ]] || quiet
+
+# 3. The invariant this whole design rests on.
+#
+# `omarchy plugin update` fast-forwards to remote HEAD, not to a tag. So
+# verifying a tag would prove nothing about what actually lands unless HEAD *is*
+# that tag. When the default branch has moved past the newest release, there is
+# no release to offer yet — stay quiet and wait for the tag.
+[[ $head_sha == "$tag_sha" ]] || quiet
+
+# 4. Is it actually newer than what is installed?
+installed=$(jq -r '.version // ""' "$PLUGIN_DIR/manifest.json" 2>/dev/null)
+[[ -n $installed ]] || quiet
+remote_version=${newest#v}
+[[ $remote_version != "$installed" ]] || quiet
+[[ "$(printf '%s\n%s\n' "$installed" "$remote_version" | sort -V | tail -1)" == "$remote_version" ]] || quiet
+
+# 5. Fetch the tag object so its signature can be checked locally. This writes
+# objects into .git but checks nothing out and executes nothing.
+timeout 30 git -C "$PLUGIN_DIR" fetch --quiet --tags origin 2>/dev/null || quiet
+
+[[ -f $ALLOWED_SIGNERS ]] ||
+  refuse "no allowed_signers file — cannot verify $newest, refusing to offer it"
+
+verify=$(git -C "$PLUGIN_DIR" \
+  -c gpg.format=ssh \
+  -c "gpg.ssh.allowedSignersFile=$ALLOWED_SIGNERS" \
+  verify-tag --raw "$newest" 2>&1)
+
+grep -q 'GOODSIG\|Good "git" signature' <<<"$verify" ||
+  refuse "release $newest is not signed by a trusted key — refusing to offer it"
+
+# 6. Trust on first use, and only first use.
+#
+# allowed_signers ships inside the repo, so whoever controls the repo controls
+# it too. Recording the fingerprint the first time a release verifies, and
+# refusing any later change, is what turns that into a real signal. Same model
+# as SSH host keys — and the same honest limitation: the first key seen is
+# trusted blindly.
+fingerprint=$(grep -o 'SHA256:[A-Za-z0-9+/=]\{20,\}' <<<"$verify" | head -1)
+[[ -n $fingerprint ]] || refuse "could not read the signing key fingerprint for $newest"
+
+if [[ -f $PIN_FILE ]]; then
+  pinned=$(<"$PIN_FILE")
+  [[ $pinned == "$fingerprint" ]] || refuse \
+    "the signing key for $newest ($fingerprint) is not the one this install has trusted since it was set up ($pinned). Refusing. If you rotated the key deliberately, delete $PIN_FILE after confirming the new key is yours."
+else
+  mkdir -p "$STATE_DIR" && printf '%s' "$fingerprint" >"$PIN_FILE"
+fi
+
+echo "$remote_version"

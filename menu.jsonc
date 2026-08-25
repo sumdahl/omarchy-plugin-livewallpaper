@@ -15,4 +15,5 @@
   "style.live.speed.brisk": {"icon":"󰓅","label":"Brisk","description":"Half again as fast","checked":"[[ \"$(omarchy-live current-speed)\" == \"1.5\" ]]","action":"omarchy-live speed 1.5"},
   "style.live.speed.rapid": {"icon":"󰓅","label":"Rapid","description":"Twice the pace","checked":"[[ \"$(omarchy-live current-speed)\" == \"2\" ]]","action":"omarchy-live speed 2"},
   "style.live.reset": {"icon":"","label":"Reset to Theme Default","action":"omarchy-live reset"},
+  "style.live.update": {"icon":"\uf021","label":"Check for Updates","description":"Review a newer signed release","action":"omarchy-launch-floating-terminal-with-presentation omarchy-live update"},
   "style.live.edit": {"icon":"","label":"Edit Spec","action":"omarchy-launch-config-editor \"$(omarchy-live path)\""},

@@ -27,12 +27,18 @@ Panel {
   property var spec: null
   property var status: null
 
-  readonly property bool liveOn: status ? status.enabled === true : false
+  // The effective switch, not the session half. `available` is what the renderer
+  // gates on; `enabled` is only the session switch and is kept for older
+  // services, so reading it alone let this tooltip say "paused" over a running
+  // wallpaper (and the reverse) — the same incoherence the menu tick had.
+  readonly property bool liveOn: !status ? false
+    : (status.available !== undefined ? status.available === true : status.enabled === true)
   readonly property bool liveAvailable: status ? status.available === true : false
   readonly property string themeName: status ? String(status.theme || "") : ""
   readonly property string quality: status ? String(status.quality || "off") : "off"
 
   readonly property string barTooltip: {
+    if (updateAvailable) return "Live wallpaper " + updateVersion + " available — click to review"
     if (!themeName) return "Live wallpaper"
     if (!liveOn) return "Live wallpaper — paused (" + themeName + ")"
     if (quality === "off") return "Live wallpaper — parked (" + themeName + ")"
@@ -155,6 +161,72 @@ Panel {
     }
   }
 
+  // Update checking -----------------------------------------------------
+  //
+  // Detects, never applies. The check transfers git refs and a tag object and
+  // nothing else — no code from the remote is run here, and nothing is written
+  // to the checkout. Applying is handed to Omarchy's own `omarchy plugin
+  // update` in a terminal the user can see, which prints the full diff and asks
+  // before touching anything. An updater that installed silently would be a
+  // remote-code-execution channel into a process that lives for the whole
+  // session, so the visible diff and the explicit yes are the point, not
+  // friction to be optimised away.
+  property bool updateAvailable: false
+  property string updateVersion: ""
+
+  function checkForUpdates() {
+    if (!updateProc.running) updateProc.running = true
+  }
+
+  function runUpdate() {
+    if (!root.bar) return
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation "
+                 + "omarchy plugin update io.github.sumdahl.livewallpaper")
+  }
+
+  Process {
+    id: updateProc
+    command: [Qt.resolvedUrl("bin/omarchy-live-update-check").toString().replace("file://", "")]
+    property string collected: ""
+    stdout: StdioCollector { onStreamFinished: updateProc.collected = String(text || "").trim() }
+    onExited: function(exitCode) {
+      // 0 and only 0 means "a signed release newer than this one exists".
+      // Exit 2 is a refusal the script has already explained on stderr; exit 1
+      // is the quiet nothing-to-do case, including being offline.
+      root.updateAvailable = exitCode === 0 && updateProc.collected.length > 0
+      root.updateVersion = root.updateAvailable ? updateProc.collected : ""
+      updateProc.collected = ""
+    }
+  }
+
+  Timer {
+    // Six hours, matching the stock system-update widget. Fires on start so a
+    // fresh session learns immediately rather than after the first interval.
+    interval: 21600000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    // Each instance runs its own timer, so this stays a direct call — going
+    // through broadcast here would run the check once per screen per tick.
+    onTriggered: root.checkForUpdates()
+  }
+
+  // A bar surface exists per monitor, so every screen instantiates this widget
+  // and each one registers this target — only the first wins, and Quickshell
+  // logs a warning for the rest. That is the same shape as the stock
+  // system-update widget and is expected rather than a fault; `broadcast` is
+  // what makes the winning instance relay to its peers, so a check refreshes
+  // the badge on every screen instead of just one.
+  IpcHandler {
+    target: "livewallpaper-update"
+
+    function check(): void { root.broadcast("checkForUpdates") }
+
+    function available(): string {
+      return root.updateAvailable ? root.updateVersion : ""
+    }
+  }
+
   implicitWidth: iconButton.implicitWidth
   implicitHeight: iconButton.implicitHeight
 
@@ -171,6 +243,20 @@ Panel {
       // opening anything — the same gesture the battery notification offers.
       if (b === Qt.MiddleButton) root.run(["omarchy-live", "toggle"])
       else root.toggle()
+    }
+
+    // A dot rather than a second bar item: the icon is already here, so an
+    // update needs to be noticeable without taking more of the bar.
+    Rectangle {
+      visible: root.updateAvailable
+      width: Style.space(6)
+      height: width
+      radius: width / 2
+      color: Color.bar.active
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.topMargin: Style.space(4)
+      anchors.rightMargin: Style.space(4)
     }
   }
 
@@ -221,6 +307,43 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           checked: root.liveOn
           onToggled: root.run(["omarchy-live", "toggle"])
+        }
+      }
+
+      // Only present when there is genuinely something to do — an always-there
+      // "check for updates" row is clutter that trains people to ignore it.
+      PanelSeparator {
+        width: parent.width
+        visible: root.updateAvailable
+      }
+
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+        visible: root.updateAvailable
+
+        Text {
+          width: parent.width
+          text: "Version " + root.updateVersion + " is available"
+          color: Color.popups.text
+          font.pixelSize: Style.font.body
+          // The version comes from a git tag, so it is remote input, and this
+          // is a Text the plugin owns. Pinned like every other one here.
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+        }
+
+        Button {
+          width: parent.width
+          // "Review", not "Update": the click opens a terminal showing the diff
+          // and waits for a yes. Naming it Update would promise something this
+          // button deliberately does not do.
+          text: "Review and update"
+          bordered: true
+          onClicked: {
+            root.close()
+            root.runUpdate()
+          }
         }
       }
 

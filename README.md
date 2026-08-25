@@ -152,6 +152,27 @@ reads as a single printed cel rather than layered sprites:
 The dot screens are weighted to the **midtones**, not to everything dark, so a
 large flat night sky stays clean instead of turning into a screen door.
 
+## Updates
+
+The plugin checks for a newer release every six hours and shows a dot on its bar
+icon when one exists. Clicking opens a terminal running Omarchy's own
+`omarchy plugin update`, which prints the full diff and waits for you to agree.
+
+**It detects; it never installs.** The check transfers git refs and a tag object
+and nothing else — no code from the remote runs during a check, and nothing is
+written to the checkout. Only a release that was deliberately tagged *and signed*
+is ever offered, and the signing key must match the one your installation trusted
+the first time it verified a release.
+
+```bash
+omarchy-live check-updates   # look now
+omarchy-live update          # review a release and apply it
+```
+
+Nothing here installs anything without showing you what changed first. The
+reasoning, the threat model, and what this explicitly does **not** protect
+against are in [SECURITY.md](SECURITY.md).
+
 ## Power behaviour
 
 The scene parks itself — animations stopped, shader layer and its offscreen
