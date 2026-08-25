@@ -2,6 +2,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
 import Quickshell.Wayland
+import Quickshell.Services.UPower
 import QtQuick
 import QtQuick.Effects
 import QtQuick.Shapes
@@ -191,8 +192,65 @@ Item {
     }
   }
 
+  // Only register once nothing else owns the `background` target.
+  //
+  // Enabling this plugin while the shell is running does not restart it: the
+  // registry fires pluginsChanged, and shell.qml's _syncServices() mounts every
+  // newly-enabled service *before* it destroys the disabled ones. So this
+  // handler would register while stock omarchy.background still holds the
+  // target, get refused ("another handler is registered for target
+  // background"), and then stock would unregister on its way out — leaving the
+  // target owned by nobody. omarchy-theme-set still applies colours through its
+  // own path, so the visible symptom is a theme that switches without its
+  // wallpaper, and it lasts until the next `omarchy restart shell`.
+  //
+  // Waiting for the outgoing service to actually be gone is what makes
+  // `omarchy plugin add --enable` a single step on someone else's machine.
+  readonly property bool stockBackgroundMounted:
+    !!(shell && typeof shell.serviceFor === "function"
+       && shell.serviceFor("omarchy.background"))
+  property bool backgroundHandlerLive: false
+
+  Timer {
+    // serviceFor() can report the old service gone a moment before its handler
+    // has actually unregistered, so registration is re-asserted a few times
+    // rather than attempted once. Toggling `enabled` is what re-runs it.
+    id: backgroundClaim
+    interval: 400
+    repeat: true
+    running: !root.stockBackgroundMounted && !root.backgroundHandlerLive
+    // Deliberately not triggeredOnStart. serviceFor() reports the outgoing
+    // service gone a beat before its handler has finished unregistering, so an
+    // immediate first attempt is the one attempt most likely to fail — and each
+    // failure is a warning in the user's journal. Waiting one tick makes the
+    // common case succeed silently on the first try.
+    property int attempts: 0
+    onTriggered: {
+      backgroundHandler.enabled = false
+      backgroundHandler.enabled = true
+      attempts += 1
+      // ~3s of re-assertion. Re-registering when we already own the target is a
+      // no-op, so the only cost of an extra attempt is nothing at all; the cap
+      // exists so a genuinely contested target does not spin for the session.
+      if (attempts >= 8) {
+        root.backgroundHandlerLive = true
+        // Whatever happened while the target was contested, the link on disk is
+        // the truth — re-read it so the wallpaper is right the moment we own it.
+        root.refreshBackground()
+      }
+    }
+  }
+
+  onStockBackgroundMountedChanged: if (stockBackgroundMounted) {
+    // Something re-mounted stock; stand down and re-claim when it leaves again.
+    root.backgroundHandlerLive = false
+    backgroundClaim.attempts = 0
+  }
+
   IpcHandler {
+    id: backgroundHandler
     target: "background"
+    enabled: false
 
     function refresh(): void {
       root.refreshBackground()
@@ -244,9 +302,19 @@ Item {
 
     function status(): string {
       return JSON.stringify({
-        // Persistent opt-out only. The session switch is `enabled`, so the two
-        // stay distinguishable: a theme can be live-capable but switched off.
-        available: liveSpec.spec !== null && liveSpec.spec.enabled !== false,
+        // Three separate things, named separately. `available` used to be
+        // computed here without userEnabled while liveSpec.available computed it
+        // with — one word meaning two things, which is what let the menu tick
+        // disagree with the screen.
+        //
+        //   specEnabled  the persistent per-theme switch (spec.enabled)
+        //   userEnabled  the session switch (omarchy-live on/off)
+        //   available    both of the above, what the renderer actually gates on
+        specEnabled: liveSpec.spec !== null && liveSpec.spec.enabled !== false,
+        userEnabled: liveSpec.userEnabled,
+        available: liveSpec.available,
+        powerMode: liveSpec.powerMode,
+        // Retained so an older omarchy-live still on PATH keeps working.
         enabled: liveSpec.userEnabled,
         quality: liveSpec.quality,
         theme: liveSpec.themeName,
@@ -288,7 +356,12 @@ Item {
     }
   }
 
-  Component.onCompleted: refreshBackground()
+  Component.onCompleted: {
+    refreshBackground()
+    // Seed from UPower's current reading. Not a transition, so batterySeen stays
+    // false and a shell restart while unplugged does not nag.
+    liveSpec.onBattery = UPower.onBattery
+  }
 
   // ---------------------------------------------------------------------
   // Live spec + power state
@@ -318,14 +391,14 @@ Item {
     // or minimal theme, so only a theme that asks for it gets it.
     readonly property var baseSpec: ({
       "version": 1,
-      "motion": { "period": 60, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
+      "motion": { "period": 36, "speed": 1.0, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
       "print":  { "halftone": 0.0, "dotScale": 150, "grain": 0.022, "vignette": 0.30, "bloom": 0.08 },
       "pulse":  { "everyMin": 24, "everyMax": 55, "attack": 200, "hold": 90, "release": 800, "aberration": 0.004 },
       "glints": { "count": 2, "everyMin": 12, "everyMax": 30, "length": 0.45, "thickness": 1.6, "speed": 1100 },
       "motes":  { "rate": 14, "life": 14000, "size": 2.6, "drift": 16, "fall": 18 },
       "colors": { "accent": "auto", "secondary": "auto" },
       "lock":   { "pulse": 0.5 },
-      "power":  { "batterySaver": false, "notifyOnBattery": true },
+      "power":  { "onBattery": "off", "notifyOnBattery": true },
       "video":  null
     })
 
@@ -360,10 +433,28 @@ Item {
     // the explicit opt-out any layer can set, plus the session switch.
     readonly property bool available: spec !== null && userEnabled && spec.enabled !== false
 
+    // What unplugging should do: "off" parks the scene, "low" drops to parallax
+    // only, "ignore" leaves it alone. `batterySaver: true` from an older spec
+    // still means "low", so specs written against the previous key keep working.
+    readonly property string powerMode: {
+      var power = spec ? spec.power : null
+      if (!power) return "off"
+      if (power.onBattery === "off" || power.onBattery === "low" || power.onBattery === "ignore")
+        return power.onBattery
+      if (power.batterySaver === true) return "low"
+      if (power.batterySaver === false) return "ignore"
+      return "off"
+    }
+
+    // Battery is a *derived* gate, never a switch that gets flipped. That is
+    // what makes plugging back in restore the treatment on its own: there is no
+    // stored "paused" state to get stuck in, so the moment UPower says the mains
+    // are back, quality returns to what it was.
     readonly property string quality: {
       if (!available) return "off"
       if (locked || anyFullscreen) return "off"
-      if (onBattery && spec && spec.power && spec.power.batterySaver !== false) return "low"
+      if (onBattery && powerMode === "off") return "off"
+      if (onBattery && powerMode === "low") return "low"
       return "high"
     }
 
@@ -559,26 +650,28 @@ Item {
   }
 
   // Battery -------------------------------------------------------------
-  GuardedFile {
-    id: acOnline
-    path: "/sys/class/power_supply/AC/online"
-    // A single digit from the kernel. Bounded like the rest so there is no path
-    // in here that reads a file without a ceiling, not because sysfs is a
-    // plausible source of one.
-    maxBytes: 4096
-    onLoaded: function(text) {
-      liveSpec.onBattery = String(text || "").trim() === "0"
-      // The first reading is the state at startup, not a transition. Without
-      // this guard every shell restart while unplugged would nag.
+  //
+  // UPower, not sysfs. This used to read /sys/class/power_supply/AC/online
+  // directly, which was wrong twice: that node is called ADP1, ACAD or AC0 on
+  // plenty of laptops, so on those machines the read simply failed and the
+  // plugin believed it was on mains forever; and sysfs does not deliver the
+  // inotify events the file watcher was waiting on, so even where the path was
+  // right the value never changed after startup. UPower is event-driven, is
+  // correct on every machine, reports false on a desktop with no battery, and
+  // is already what stock Omarchy's battery service uses.
+  Connections {
+    target: UPower
+    function onOnBatteryChanged() {
       liveSpec.batterySeen = true
+      liveSpec.onBattery = UPower.onBattery
     }
-    onLoadFailed: liveSpec.onBattery = false
   }
 
-  // Unplugging is the one moment the cost of the treatment is worth raising,
-  // so it is raised once per discharge and offers a one-click pause rather
-  // than just stating a fact. Pausing parks the scene; the plugin stays
-  // mounted and `omarchy-live on` brings everything back.
+
+  // The scene parks itself on battery now, so this says what happened rather
+  // than asking the user to do it. Once per discharge, re-armed when the mains
+  // come back. There is no click action any more: offering to pause a thing
+  // that has already paused only reads as a second, contradictory switch.
   Connections {
     target: liveSpec
 
@@ -587,9 +680,14 @@ Item {
         liveSpec.batteryNoticeSent = false   // re-arm for the next discharge
         return
       }
+      // The reading at startup is a state, not a transition, so a shell restart
+      // while already unplugged does not nag.
       if (!liveSpec.batterySeen) return
       if (liveSpec.batteryNoticeSent) return
-      if (!liveSpec.available) return        // already paused, nothing to offer
+      // Nothing was running, so nothing was given up.
+      if (!liveSpec.available) return
+      // The mode that changes nothing has nothing to announce.
+      if (liveSpec.powerMode === "ignore") return
       var power = liveSpec.spec ? liveSpec.spec.power : null
       if (power && power.notifyOnBattery === false) return
 
@@ -599,15 +697,48 @@ Item {
         "--app-name", "omarchy-live",
         "-u", "normal",
         "-g", "󰂃",
-        "--exec", "omarchy-live off",
         "On battery",
-        "Live wallpaper is drawing extra power. Click to pause it — omarchy-live on brings it back."
+        liveSpec.powerMode === "off"
+          ? "Live wallpaper paused to save power. It resumes when you plug back in."
+          : "Live wallpaper reduced to save power. Full effects resume when you plug back in."
       ]
       batteryNotice.running = true
     }
   }
 
   Process { id: batteryNotice }
+
+  // First-mount setup ---------------------------------------------------
+  //
+  // `omarchy plugin add <url> --enable` clones, enables and stops — it never
+  // runs this plugin's install.sh, and the Omarchy menu does not read a
+  // plugin's own menu.jsonc. So on a machine that installed this the documented
+  // way, neither the `omarchy-live` command nor the Style > Live Wallpaper rows
+  // exist, and the plugin looks broken through no fault of the person who
+  // installed it. bin/omarchy-live-setup closes both gaps; it is idempotent and
+  // prints nothing at all unless it actually changed something.
+  Process {
+    id: firstRunSetup
+    running: true
+    command: ["bash", Qt.resolvedUrl("bin/omarchy-live-setup").toString().replace("file://", "")]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var did = String(text || "").trim()
+        if (!did) return
+        console.log("livewallpaper: first-run setup —", did)
+        setupNotice.command = [
+          "omarchy-notification-send",
+          "--app-name", "omarchy-live",
+          "-u", "low",
+          "Live Wallpaper ready",
+          did
+        ]
+        setupNotice.running = true
+      }
+    }
+  }
+
+  Process { id: setupNotice }
 
   Variants {
     model: Quickshell.screens

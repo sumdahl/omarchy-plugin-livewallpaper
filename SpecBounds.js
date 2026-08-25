@@ -22,6 +22,9 @@ var BOUNDS = {
   // Camera. `period` is the loop length in seconds; the rest are fractions of
   // the screen, and the still is overscanned to cover them.
   "motion.period": [4, 3600],
+  // Multiplier on the loop, so a spec can ask for livelier motion without
+  // restating the period. Effective loop = period / speed.
+  "motion.speed": [0.1, 8],
   "motion.zoom": [0, 0.5],
   "motion.driftX": [0, 0.25],
   "motion.driftY": [0, 0.25],

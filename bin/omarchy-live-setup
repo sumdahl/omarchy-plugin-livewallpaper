@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# First-mount setup for io.github.sumdahl.livewallpaper.
+#
+# `omarchy plugin add <url> --enable` clones, enables and stops — it never runs
+# the plugin's install.sh. And the Omarchy menu does not read a plugin's own
+# menu.jsonc; only ~/.config/omarchy/extensions/omarchy-menu.jsonc is loaded, by
+# the menu plugin. So on a machine that installed this the documented way,
+# neither the `omarchy-live` command nor the Style > Live Wallpaper rows exist,
+# and the plugin looks broken through no fault of whoever installed it.
+#
+# This closes both gaps. It is idempotent and silent when there is nothing to
+# do: it prints a one-line summary only when it actually changed something, and
+# the service turns that line into a single notification.
+
+set -uo pipefail
+
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/io.github.sumdahl.livewallpaper"
+MENU_EXT="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+BIN="$HOME/.local/bin/omarchy-live"
+
+did=()
+
+# The command. Installed from the plugin's own bin/ when it is missing *or when
+# it differs* — `omarchy plugin update` refreshes the plugin but knows nothing
+# about ~/.local/bin, so a missing-only check would leave a stale CLI talking to
+# a newer service. Comparing content rather than mtime keeps it silent when
+# there is genuinely nothing to do.
+if [[ -f "$PLUGIN_DIR/bin/omarchy-live" ]] && ! cmp -s "$PLUGIN_DIR/bin/omarchy-live" "$BIN"; then
+  was_present=0
+  [[ -e $BIN ]] && was_present=1
+  if install -Dm755 "$PLUGIN_DIR/bin/omarchy-live" "$BIN" 2>/dev/null; then
+    if ((was_present)); then
+      did+=("an updated omarchy-live command")
+    else
+      did+=("the omarchy-live command")
+    fi
+  fi
+fi
+
+# The menu rows. `menu-install` backs the file up and inserts textually rather
+# than round-tripping the JSONC, so comments and other rows survive it.
+if ! grep -q '"style\.live"' "$MENU_EXT" 2>/dev/null; then
+  if PATH="$HOME/.local/bin:$PATH" omarchy-live menu-install >/dev/null 2>&1; then
+    did+=("Style > Live Wallpaper in your menu")
+  fi
+fi
+
+((${#did[@]})) || exit 0
+
+if ((${#did[@]} == 2)); then
+  printf 'Added %s and %s.' "${did[0]}" "${did[1]}"
+else
+  printf 'Added %s.' "${did[0]}"
+fi

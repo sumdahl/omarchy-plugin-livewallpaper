@@ -61,7 +61,13 @@ Item {
   // A single 0..2pi phase drives every camera move. Every term below is an
   // integer harmonic of it, so the loop closes with matching position *and*
   // velocity and there is no visible seam at the wrap.
-  readonly property real motionPeriodMs: Math.max(4000, Number(cfg("motion", "period", 48)) * 1000)
+  // `speed` is a multiplier on the loop rather than a second way of spelling
+  // the period, so a user preference for livelier motion survives a theme that
+  // sets its own period. Both come through the clamped cfg(), and the 4s floor
+  // stays as the last guard on the animation duration.
+  readonly property real motionSpeed: Math.max(0.1, Number(cfg("motion", "speed", 1.0)))
+  readonly property real motionPeriodMs:
+    Math.max(4000, Number(cfg("motion", "period", 48)) * 1000 / motionSpeed)
   readonly property real zoomAmp: Number(cfg("motion", "zoom", 0.06)) * intensity
   readonly property real driftXAmp: Number(cfg("motion", "driftX", 0.018)) * intensity
   readonly property real driftYAmp: Number(cfg("motion", "driftY", 0.012)) * intensity

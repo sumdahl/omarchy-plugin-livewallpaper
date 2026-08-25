@@ -240,8 +240,23 @@ Panel {
         minimum: 20
         maximum: 120
         step: 2
-        value: root.num("motion", "period", 60)
+        value: root.num("motion", "period", 36)
         onCommit: function (v) { root.tune("motion.period", v) }
+      }
+
+      LiveSlider {
+        width: parent.width
+        bar: root.bar
+        // Composes with the loop length above rather than duplicating it: the
+        // period is what the theme asked for, the speed is what you want on top
+        // of it, so a preference for livelier motion survives a theme switch.
+        label: "Speed"
+        suffix: "x"
+        minimum: 0.25
+        maximum: 3.0
+        step: 0.05
+        value: root.num("motion", "speed", 1.0)
+        onCommit: function (v) { root.tune("motion.speed", v) }
       }
 
       LiveSlider {

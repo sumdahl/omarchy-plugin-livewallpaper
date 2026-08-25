@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Control the per-theme live wallpaper treatment
-# omarchy:args=[on|off|toggle|enable|disable|status|tune <key> <value>|reset|path|reload|edit|install|uninstall|menu-install|menu-uninstall]
+# omarchy:args=[toggle|on|off|enable|disable|status|speed <x>|tune <key> <value>|reset|path|reload|edit|install|uninstall|menu-install|menu-uninstall]
 # omarchy:examples=omarchy-live off | omarchy-live tune print.halftone 0.4
 
 set -euo pipefail
@@ -78,13 +78,16 @@ usage() {
   cat <<'USAGE'
 Usage: omarchy-live <command>
 
-  on | off | toggle   Turn the live treatment on or off for this session
-  enable | disable    Same, but persistent, per theme: omarchy-live disable nord
+  toggle              Turn the live treatment on or off, persistently
+  on | off            Same for this session only (does not survive a restart)
+  enable | disable    Persistent, naming a theme: omarchy-live disable nord
   status              Show live wallpaper state as JSON
   is-on               Exit 0 when enabled (for menu `checked:` conditions)
   is-available        Exit 0 when this theme is live-capable
   preset <name>       subtle | balanced | bold
   current-preset      Print the closest named preset
+  speed <x>           Motion multiplier, 0.1-8 (1.0 = the built-in pace)
+  current-speed       Print the multiplier in effect
   tune <key> <value>  Set a dotted key, e.g. print.halftone 0.4
   edit [theme]        Open the spec this theme is tuned through ("theme" = its own)
   reload              Re-read every spec layer
@@ -113,14 +116,43 @@ USAGE
 
 cmd=${1:-status}
 case "$cmd" in
-on | off | toggle)
-  omarchy-shell livewallpaper "$([[ $cmd == on ]] && echo enable || { [[ $cmd == off ]] && echo disable || echo toggle; })" >/dev/null
+on | off)
+  # Session only, and deliberately so: this is the transient escape hatch, not
+  # the setting. `toggle` below is the persistent one, because that is what the
+  # menu row drives and a menu tick that forgets itself on reboot is a bug.
+  omarchy-shell livewallpaper "$([[ $cmd == on ]] && echo enable || echo disable)" >/dev/null
   sleep 0.2
   if omarchy-live is-on; then state="On"; glyph="󰅫"; else state="Off"; glyph="󰋙"; fi
   # Visible confirmation, because the effect is subtle enough that a silent
   # toggle leaves you unsure whether anything happened.
   omarchy-notification-send -g "$glyph" "Live Wallpaper" "$state — $THEME_NAME" 2>/dev/null || true
   echo "live wallpaper $(tr "[:upper:]" "[:lower:]" <<<"$state")"
+  ;;
+toggle)
+  # Persistent, because this is what the menu row runs. Flips the same
+  # spec.enabled the `enable`/`disable` pair writes, so the tick survives a
+  # shell restart and a reboot. Reads the effective state first so it toggles
+  # what is actually on screen rather than one of the two switches in isolation.
+  if omarchy-live is-on; then next=disable; state="Off"; glyph="󰋙"; else next=enable; state="On"; glyph="󰅫"; fi
+  # A session `off` would otherwise keep the scene down after enabling.
+  [[ $next == enable ]] && omarchy-shell -q livewallpaper enable
+  omarchy-live "$next" >/dev/null
+  omarchy-notification-send -g "$glyph" "Live Wallpaper" "$state — $THEME_NAME" 2>/dev/null || true
+  echo "live wallpaper $(tr "[:upper:]" "[:lower:]" <<<"$state")"
+  ;;
+speed)
+  # Multiplier on the parallax loop. 1.0 is the built-in pace; higher is faster.
+  value=${2:-}
+  [[ -n $value ]] || fail "usage: omarchy-live speed <0.1-8>  (1.0 = default)"
+  awk -v v="$value" 'BEGIN{ exit !(v+0 >= 0.1 && v+0 <= 8) }' ||
+    fail "speed must be between 0.1 and 8"
+  write_spec "$(read_effective | jq ".motion.speed = $value")"
+  omarchy-notification-send -g 󰅫 "Live Wallpaper" "Speed ${value}x" 2>/dev/null || true
+  echo "speed = $value"
+  ;;
+current-speed)
+  # For the menu to tick the active row.
+  read_resolved | jq -r '.motion.speed // 1' 2>/dev/null || echo 1
   ;;
 reload) omarchy-shell livewallpaper reload  >/dev/null; echo "reloaded" ;;
 status) omarchy-shell livewallpaper status | jq . 2>/dev/null || omarchy-shell livewallpaper status ;;
@@ -161,10 +193,30 @@ tune)
   echo "$key = $value"
   ;;
 is-on)
-  # Exit status only, for menu `checked:` conditions. Reports the user's
-  # switch, not the live quality, so the row does not appear to untick itself
-  # every time a fullscreen window parks the scene.
-  [[ "$(omarchy-shell livewallpaper status 2>/dev/null | jq -r '.enabled // false' 2>/dev/null)" == "true" ]]
+  # Exit status only, for menu `checked:` conditions.
+  #
+  # Reports the *effective* switch — the persistent spec.enabled and the session
+  # switch together — which is the value the renderer itself gates on. It used
+  # to read only the session half, so after `omarchy-live disable` the row still
+  # showed a tick over a wallpaper that was off.
+  #
+  # Deliberately not the live quality: a fullscreen window or a battery pause
+  # parks the scene without the user having switched anything, and a row that
+  # unticks itself for those would be lying in the other direction.
+  #
+  # Exit 2, not 1, when the shell cannot be reached, so "off" and "no answer"
+  # stay distinguishable instead of the row silently unticking.
+  raw=$(omarchy-shell livewallpaper status 2>/dev/null) || exit 2
+  [[ -n $raw ]] || exit 2
+  # `available` is the merged answer; older services only published `enabled`.
+  #
+  # Not `.available // .enabled` — jq's alternative operator falls through on
+  # `false` as well as on null, so a genuinely-off wallpaper would fall back to
+  # the session switch and report itself on. has() asks the question actually
+  # being asked: does this service publish the field at all?
+  state=$(jq -r 'if has("available") then .available elif has("enabled") then .enabled else empty end' <<<"$raw" 2>/dev/null)
+  [[ -n $state ]] || exit 2
+  [[ $state == "true" ]]
   ;;
 is-available)
   # Whether the current theme ships a live spec at all, for menu `when:`.
@@ -209,7 +261,7 @@ install)
   cat >"$dir/live/live.json" <<'SPEC'
 {
   "version": 1,
-  "motion": { "period": 60, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
+  "motion": { "period": 36, "speed": 1.0, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
   "print":  { "halftone": 0.0, "dotScale": 150, "grain": 0.022, "vignette": 0.30, "bloom": 0.08 },
   "pulse":  { "everyMin": 24, "everyMax": 55, "attack": 200, "hold": 90, "release": 800, "aberration": 0.004 },
   "glints": { "count": 2, "everyMin": 12, "everyMax": 30, "length": 0.45, "thickness": 1.6, "speed": 1100 },

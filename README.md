@@ -16,18 +16,27 @@ who wants a static wallpaper opts out.
 ## Install
 
 ```bash
-omarchy-plugin-clone io.github.sumdahl.livewallpaper   # or clone the repo into ~/.config/omarchy/plugins/
-./install.sh                                           # enables it and adds the menu rows
-omarchy restart shell                                  # service plugins mount on restart only
+omarchy plugin add https://github.com/sumdahl/omarchy-plugin-livewallpaper.git --enable
 ```
 
-`install.sh` calls `omarchy-live menu-install`, which merges the
-`Style > Live Wallpaper` rows into `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
-That step is separate because Omarchy's menu reads exactly one user file and
-plugins cannot contribute rows to it. The merge is textual and additive: it
-creates the file if missing, never touches keys it does not own, preserves the
-comments in a JSONC file, and is a no-op on a second run.
-`omarchy-live menu-uninstall` removes only its own rows.
+That is the whole thing. The plugin finishes its own setup the first time it
+mounts: it puts `omarchy-live` on your `PATH` and merges the
+`Style > Live Wallpaper` rows into
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`, then tells you once that it
+did. Both steps are necessary because `omarchy plugin add` does not run a
+plugin's `install.sh`, and Omarchy's menu reads exactly one user file — a plugin
+cannot contribute rows to it from its own directory. Skipping them is what made
+this plugin look broken on a machine other than the one it was written on.
+
+The merge is textual and additive: it creates the file if missing, never touches
+keys it does not own, preserves the comments in a JSONC file, and is a no-op on a
+second run. `omarchy-live menu-uninstall` removes only its own rows. The setup
+also refreshes `~/.local/bin/omarchy-live` whenever it differs from the plugin's
+copy, so `omarchy plugin update` cannot leave a stale command talking to a newer
+service.
+
+Cloning by hand instead? `./install.sh` does the same work up front, and
+`omarchy restart shell` mounts it.
 
 Nothing about the menu is required — the bar icon works on its own.
 
@@ -90,9 +99,15 @@ disables the plugin everywhere, in layer 3 a theme author declares "this theme
 should not animate", and in layer 4 you overrule either:
 
 ```bash
-omarchy-live disable nord     # persistent, this theme
-omarchy-live off              # this session, every theme
+omarchy-live toggle           # persistent, this theme — what the menu row runs
+omarchy-live disable nord     # persistent, naming a theme
+omarchy-live off              # this session only, every theme
 ```
+
+`toggle` and `on`/`off` are deliberately different switches. The menu tick is a
+setting, so it writes the persistent one and survives a reboot; `on`/`off` are
+the transient escape hatch. `omarchy-live is-on` reports the two combined — the
+same value the renderer gates on — so the tick and the screen cannot disagree.
 
 ## Where edits land
 
@@ -151,22 +166,39 @@ buffer dropped entirely — when:
 Measured cost of the full treatment on Intel Iris Xe at 1920x1080:
 **+3.6 percentage points of one core** over the stock static background.
 
-`power.batterySaver: true` drops to parallax-only on battery. The baseline ships
-it **off**, so the full effect is always on; turn it on if you want the battery
-back.
+**On battery the scene parks itself, and comes back on its own when you plug in.**
+`power.onBattery` chooses what unplugging does:
 
-On unplugging, a notification offers a one-click pause — once per discharge,
-never at startup, and never when the treatment is already off. Pausing parks the
-scene but leaves the plugin mounted, so `omarchy-live on` restores the desktop
-and the lock screen exactly as they were. Silence it with
-`power.notifyOnBattery: false` in any layer.
+| value | on battery |
+|---|---|
+| `"off"` *(default)* | scene parks completely |
+| `"low"` | drops to parallax only — no glints, motes or shader pass |
+| `"ignore"` | full effect, as if plugged in |
+
+This is a *derived* state, not a switch that gets flipped: nothing is stored, so
+reconnecting the mains restores exactly what you had with no click and nothing to
+get stuck in. `power.batterySaver: true` from an older spec is still read as
+`"low"`, and `false` as `"ignore"`.
+
+Battery state comes from UPower, the same source stock Omarchy uses. An earlier
+version read `/sys/class/power_supply/AC/online` directly, which was wrong on any
+laptop that calls that node `ADP1`, `ACAD` or `AC0` — and wrong even where the
+path was right, because sysfs does not deliver the change notifications the
+watcher was waiting on.
+
+On unplugging, a notification says the scene paused itself and will resume on AC
+— once per discharge, re-armed when the mains return, never at startup, and never
+when the treatment was already off or `power.onBattery` is `"ignore"`. Silence it
+with `power.notifyOnBattery: false` in any layer.
 
 ## Control
 
 ```bash
 omarchy-live status              # current state as JSON, including which layers apply
-omarchy-live off | on | toggle   # this session, every theme
+omarchy-live toggle              # on/off, persistent — what the menu row runs
+omarchy-live off | on            # this session only, every theme
 omarchy-live disable <theme>     # persistent, one theme
+omarchy-live speed 1.5           # motion multiplier, 0.1-8 (1.0 = built-in pace)
 omarchy-live tune print.halftone 0.4
 omarchy-live preset bold         # subtle | balanced | bold
 omarchy-live reset               # drop your override for this theme
@@ -185,7 +217,7 @@ Every key is optional; the values below are the built-in defaults.
 ```jsonc
 {
   "enabled": true,                                      // false opts this layer out
-  "motion": { "period": 60, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
+  "motion": { "period": 36, "speed": 1.0, "zoom": 0.05, "driftX": 0.014, "driftY": 0.009 },
   "print":  { "halftone": 0.0, "dotScale": 150, "grain": 0.022,
               "vignette": 0.30, "bloom": 0.08 },
   "pulse":  { "everyMin": 24, "everyMax": 55, "attack": 200, "hold": 90,
@@ -195,12 +227,19 @@ Every key is optional; the values below are the built-in defaults.
   "motes":  { "rate": 14, "life": 14000, "size": 2.6, "drift": 16, "fall": 18 },
   "colors": { "accent": "auto", "secondary": "auto" },  // "auto" = theme palette
   "lock":   { "pulse": 0.5 },                           // 0 disables the lock rim
-  "power":  { "batterySaver": false, "notifyOnBattery": true },
+  "power":  { "onBattery": "off", "notifyOnBattery": true },
   "video":  null                                        // path, relative to live/
 }
 ```
 
-`period` is in seconds; every other duration is in milliseconds.
+`period` is in seconds; every other duration is in milliseconds. `speed`
+multiplies the loop rather than restating it — the effective loop is
+`period / speed` — so a preference for livelier motion survives a theme that
+sets its own period.
+
+Every numeric here is clamped to a sane range on the way in (`SpecBounds.js`),
+and the mote population is bounded as a whole rather than per key, so no spec
+file can turn the wallpaper into a denial of service.
 
 ### Video wallpapers
 
