@@ -10,6 +10,9 @@ on:
   pull_request:
   push:
     branches: [main, dev]
+    # Tags too, or the version-match step below can never fire — it is guarded on
+    # a tag ref, so without this it was dead code on every run.
+    tags: ['v*']
 
 # Least privilege: this job only ever reads the tree.
 permissions:
